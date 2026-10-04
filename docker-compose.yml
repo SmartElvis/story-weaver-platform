@@ -1,0 +1,105 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: story_postgres
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: story_platform
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - story_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: story_redis
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - story_network
+
+  backend:
+    build: ./backend
+    container_name: story_backend
+    ports:
+      - "8001:8000"
+    env_file:
+      - ./backend/.env
+    environment:
+      - FILE_STAGING_DIR=/tmp/story_staging
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - style_staging:/tmp/story_staging
+    command: >
+      sh -c "pip install -q -r /app/requirements.txt 2>/dev/null;
+             alembic upgrade head;
+             exec uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    networks:
+      - story_network
+
+  worker:
+    build: ./backend
+    container_name: story_worker
+    env_file:
+      - ./backend/.env
+    environment:
+      - FILE_STAGING_DIR=/tmp/story_staging
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - style_staging:/tmp/story_staging
+    command: >
+      sh -c "pip install -q -r /app/requirements.txt 2>/dev/null;
+             exec arq app.worker.WorkerSettings"
+    networks:
+      - story_network
+
+  frontend:
+    build: ./frontend
+    container_name: story_frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8001/api
+    volumes:
+      - ./frontend/src:/app/src
+    command: npm run dev
+    depends_on:
+      - backend
+    networks:
+      - story_network
+
+volumes:
+  postgres_data:
+  redis_data:
+  style_staging:
+
+networks:
+  story_network:
+    driver: bridge
